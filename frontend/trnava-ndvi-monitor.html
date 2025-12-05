@@ -7,6 +7,8 @@
     
     <script src="https://cdn.tailwindcss.com"></script>
     
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700&display=swap" rel="stylesheet">
 
     <script async defer src="https://maps.googleapis.com/maps/api/js?key=AIzaSyDjXGID4yTG0nZFyQIpnkC_3EhqCa0vyLI&callback=initMap&v=weekly"></script>
@@ -47,12 +49,12 @@
             <div class="flex items-center gap-3 mb-2">
                 <div class="bg-green-100 p-2 rounded-lg text-green-700">
                     <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 20l-5.447-2.724A1 1 0 013 16.382V5.618a1 1 0 011.447-.894L9 7m0 13l6-3m-6 3V7m6 10l4.553 2.276A1 1 0 0121 18.382V7.618a1 1 0 01-.447-.894L15 7m0 13V7m0 0L9.5 3.5" />
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 20l-5.447-2.724A1 1 0 013 16.382V5.618a1 1 0 011.447-.894L9 7m0 13l6-3m-6 3V7m6 10l4.553 2.276A1 1 0 0121 18.382V7.618a1 1 0 01-.447-.894L15 7m0 0L9.5 3.5" />
                     </svg>
                 </div>
                 <div>
                     <h1 class="font-bold text-lg leading-tight">Trnava NDVI</h1>
-                    <p class="text-xs text-slate-500 font-medium">Sentinel-2 Live Monitor</p>
+                    <p class="text-xs text-slate-500 font-medium">Sentinel-2 Monitor</p>
                 </div>
             </div>
             
@@ -61,12 +63,41 @@
                     <span class="w-2 h-2 rounded-full bg-green-500 animate-pulse"></span>
                     Backend Active
                 </span>
-                <span class="text-slate-400">v2.1 (FastAPI)</span>
+                <span class="text-slate-400">v3.0 (FastAPI)</span>
             </div>
         </div>
 
         <div class="glass-panel p-5 rounded-xl flex flex-col gap-5 overflow-y-auto">
             
+            <div>
+                <label class="text-xs font-bold uppercase text-slate-400 tracking-wider mb-2 block">Map Date Snapshot</label>
+                <div class="grid grid-cols-2 gap-2">
+                    <select id="map-year-select" class="w-full text-xs p-2 border border-slate-200 rounded text-slate-700 bg-white">
+                        <option value="2025">2025</option>
+                        <option value="2024">2024</option>
+                    </select>
+                    <select id="map-season-select" class="w-full text-xs p-2 border border-slate-200 rounded text-slate-700 bg-white">
+                        <option value="spring">Spring</option>
+                        <option value="summer">Summer</option>
+                        <option value="autumn">Autumn</option>
+                        <option value="winter">Winter</option>
+                    </select>
+                </div>
+                <p class="text-[10px] text-slate-400 mt-1">Changes the NDVI data displayed on the map.</p>
+            </div>
+            
+            <hr class="border-slate-100">
+            
+            <div>
+                <label class="text-xs font-bold uppercase text-slate-400 tracking-wider mb-2 block">Last 2 Year Comparison</label>
+                <div class="h-40 p-1">
+                    <canvas id="seasonalChart"></canvas>
+                </div>
+                <p class="text-[10px] text-slate-400 mt-1">Regional average NDVI for each season.</p>
+            </div>
+
+            <hr class="border-slate-100">
+
             <div>
                 <div class="flex justify-between items-center mb-2">
                     <label class="text-xs font-bold uppercase text-slate-400 tracking-wider">Analysis Layer</label>
@@ -87,8 +118,7 @@
                             <span class="text-slate-600">Grid Resolution</span>
                             <span class="font-mono text-slate-400">Med</span>
                         </div>
-                        <input id="resolution-slider" type="range" min="10" max="50" step="5" value="25" class="w-full h-1 bg-slate-200 rounded-lg appearance-none cursor-pointer accent-green-600">
-                        <p class="text-[10px] text-slate-400 mt-1">Higher resolution requires more processing time.</p>
+                        <input id="resolution-slider" type="range" min="10" max="100" step="5" value="25" class="w-full h-1 bg-slate-200 rounded-lg appearance-none cursor-pointer accent-green-600">
                     </div>
                 </div>
             </div>
@@ -96,10 +126,10 @@
             <hr class="border-slate-100">
 
             <div>
-                <label class="text-xs font-bold uppercase text-slate-400 tracking-wider mb-2 block">Region Stats</label>
+                <label class="text-xs font-bold uppercase text-slate-400 tracking-wider mb-2 block">Current Snapshot Stats</label>
                 <div class="grid grid-cols-2 gap-2">
                     <div class="bg-slate-50 p-2 rounded border border-slate-100">
-                        <div class="text-[10px] text-slate-400 mb-1">Avg NDVI</div>
+                        <div class="text-[10px] text-slate-400 mb-1">Avg NDVI (Map)</div>
                         <div class="font-bold text-lg text-slate-700" id="stat-avg">--</div>
                     </div>
                     <div class="bg-slate-50 p-2 rounded border border-slate-100">
@@ -152,24 +182,23 @@
 
     <script>
         // Global Map Variables
-        let map, infoWindow;
+        let map, infoWindow, chart;
         let gridCircles = [];
         let isLayerVisible = true;
         let currentOpacity = 0.6;
-        let currentResolution = 25; // number of circles per axis
+        let currentResolution = 25; 
+        let currentDateKey = '2025-spring'; // NEW: Default date key for map
 
         // Trnava Coords (approx center)
         const TRNAVA_CENTER = { lat: 48.3774, lng: 17.5872 };
 
         async function initMap() {
-          // Import libraries
           const { Map, InfoWindow, Circle } = await google.maps.importLibrary("maps");
 
-          // Initialize Map
           map = new Map(document.getElementById("map"), {
             center: TRNAVA_CENTER,
             zoom: 13,
-            mapId: 'DEMO_MAP_ID', // Replace with your Map ID if you have one
+            mapId: 'DEMO_MAP_ID',
             mapTypeId: 'satellite', 
             disableDefaultUI: true, 
             zoomControl: true,
@@ -180,9 +209,10 @@
 
           infoWindow = new InfoWindow();
 
-          // Wait a moment for map to settle then generate grid via API
           setTimeout(() => {
+            // Load both grid and seasonal stats on startup
             generateNDVIGrid(Circle);
+            fetchSeasonalStats();
             
             // Hide loader
             const loader = document.getElementById('map-loader');
@@ -192,42 +222,119 @@
             }
           }, 1000);
 
-          // Setup Controls
           setupEventListeners(Circle);
         }
 
-        // --- NEW: Generate Grid via Backend API ---
+        // --- FETCH & RENDER COMPARISON STATS ---
+        async function fetchSeasonalStats() {
+            try {
+                const response = await fetch('/api/seasonal-stats');
+                if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+                const data = await response.json();
+                renderChart(data);
+            } catch (error) {
+                console.error("Error fetching seasonal stats:", error);
+            }
+        }
+
+        function renderChart(data) {
+            const ctx = document.getElementById('seasonalChart').getContext('2d');
+            
+            // Data is structured as: { 2025: {spring: 0.x, ...}, 2024: {...} }
+            const seasons = ['spring', 'summer', 'autumn', 'winter'];
+            const labels = seasons.map(s => s.charAt(0).toUpperCase() + s.slice(1));
+            
+            const data2025 = seasons.map(s => data['2025'][s]);
+            const data2024 = seasons.map(s => data['2024'][s]);
+
+            if (chart) {
+                chart.destroy(); // Destroy previous instance
+            }
+
+            chart = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: labels,
+                    datasets: [
+                        {
+                            label: '2025 Average NDVI',
+                            data: data2025,
+                            borderColor: '#10b981', // Emerald green
+                            backgroundColor: 'rgba(16, 185, 129, 0.2)',
+                            tension: 0.3,
+                            fill: true,
+                            pointRadius: 4
+                        },
+                        {
+                            label: '2024 Average NDVI',
+                            data: data2024,
+                            borderColor: '#64748b', // Slate gray
+                            backgroundColor: 'rgba(100, 116, 139, 0.2)',
+                            tension: 0.3,
+                            fill: false,
+                            pointRadius: 4
+                        }
+                    ]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    scales: {
+                        y: {
+                            min: 0.2, // Set minimum for better visibility of differences
+                            max: 0.7,
+                            title: { display: false },
+                            ticks: { font: { size: 9 } }
+                        },
+                        x: {
+                            ticks: { font: { size: 9 } }
+                        }
+                    },
+                    plugins: {
+                        legend: {
+                            position: 'bottom',
+                            labels: {
+                                boxWidth: 10,
+                                padding: 10,
+                                font: { size: 10 }
+                            }
+                        },
+                        tooltip: {
+                            bodyFont: { size: 10 },
+                            titleFont: { size: 10 }
+                        }
+                    }
+                }
+            });
+        }
+
+
+        // --- FETCH & RENDER MAP GRID ---
         async function generateNDVIGrid(CircleClass) {
-          // Clear existing circles
           gridCircles.forEach(c => c.setMap(null));
           gridCircles = [];
 
-          // Define Bounds (around Trnava view)
           const boundsPayload = {
             north: TRNAVA_CENTER.lat + 0.04,
             south: TRNAVA_CENTER.lat - 0.04,
             east: TRNAVA_CENTER.lng + 0.06,
             west: TRNAVA_CENTER.lng - 0.06,
-            resolution: currentResolution
+            resolution: currentResolution,
+            date_key: currentDateKey // NEW: Pass the selected date key
           };
 
           try {
-            console.log("Fetching NDVI data from backend...");
-            
-            // Call your FastAPI Backend
             const response = await fetch('/api/ndvi-grid', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(boundsPayload)
             });
 
-            if (!response.ok) {
-                throw new Error(`HTTP error! status: ${response.status}`);
-            }
-
+            if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
             const data = await response.json();
             
-            // Process points returned from Python
+            let totalNdvi = 0;
+
             data.points.forEach(point => {
               const circle = new CircleClass({
                 strokeColor: point.color,
@@ -242,12 +349,14 @@
                 zIndex: 1
               });
 
+              totalNdvi += point.ndvi;
+
               // Click Listener
               circle.addListener('click', (ev) => {
                 const content = document.createElement('div');
                 content.className = 'p-2 text-slate-800';
                 content.innerHTML = `
-                  <h4 class="font-bold text-sm mb-1">Grid Analysis</h4>
+                  <h4 class="font-bold text-sm mb-1">Grid Analysis - ${currentDateKey.toUpperCase()}</h4>
                   <p class="text-xs">NDVI Value: <span class="font-bold ${point.ndvi > 0.4 ? 'text-green-600' : 'text-orange-600'}">${point.ndvi}</span></p>
                   <p class="text-[10px] text-slate-500">Lat: ${point.lat.toFixed(4)}, Lng: ${point.lng.toFixed(4)}</p>
                 `;
@@ -264,10 +373,9 @@
               gridCircles.push(circle);
             });
 
-            // Update stats in the sidebar (Simplified average calculation)
+            // Update stats in the sidebar
             if (data.points.length > 0) {
-                const total = data.points.reduce((acc, curr) => acc + curr.ndvi, 0);
-                const avg = (total / data.points.length).toFixed(2);
+                const avg = (totalNdvi / data.points.length).toFixed(3);
                 const statElement = document.getElementById('stat-avg');
                 if(statElement) statElement.innerText = avg;
             }
@@ -280,6 +388,19 @@
 
         // UI Event Listeners
         function setupEventListeners(CircleClass) {
+          
+          // Map Date Selectors (NEW)
+          const mapYearSelect = document.getElementById('map-year-select');
+          const mapSeasonSelect = document.getElementById('map-season-select');
+
+          const updateMapDate = () => {
+            currentDateKey = `${mapYearSelect.value}-${mapSeasonSelect.value}`;
+            generateNDVIGrid(CircleClass);
+          };
+
+          if(mapYearSelect) mapYearSelect.addEventListener('change', updateMapDate);
+          if(mapSeasonSelect) mapSeasonSelect.addEventListener('change', updateMapDate);
+
           // Opacity Slider
           const opSlider = document.getElementById('opacity-slider');
           if(opSlider) {
@@ -322,6 +443,9 @@
             map.setZoom(14);
           }
         };
+
+        // Initialize
+        initMap();
     </script>
 </body>
 </html>
