@@ -352,249 +352,194 @@
 </section>
 
 <script>
-    // Global Map Variables
-    let map, infoWindow;
-    let gridCircles = [];
-    let isLayerVisible = true;
-    let currentOpacity = 0.6;
-    let currentResolution = 25; // number of circles per axis
+  // Global Map Variables
+  let map, infoWindow;
+  let gridCircles = [];
+  let isLayerVisible = true;
+  let currentOpacity = 0.6;
+  let currentResolution = 25; // number of circles per axis
 
-    // Trnava Coords (approx center)
-    const TRNAVA_CENTER = { lat: 48.3774, lng: 17.5872 };
-    
-    // Key Anchors for Simulation
-    // These define the "Green" (High NDVI) and "Urban" (Low NDVI) zones.
-    // The algo will interpolate values based on distance to these points.
-    const anchors = [
-      // GREEN ZONES (High NDVI)
-      { lat: 48.366, lng: 17.548, type: 'green', strength: 1.2, radius: 0.015 }, // Kamenný mlyn (Large park/water)
-      { lat: 48.375, lng: 17.584, type: 'green', strength: 0.9, radius: 0.005 }, // Bernolákov sad (City park)
-      { lat: 48.369, lng: 17.575, type: 'green', strength: 0.8, radius: 0.006 }, // Park Janka Kráľa (Station park)
-      { lat: 48.390, lng: 17.580, type: 'green', strength: 1.0, radius: 0.012 }, // Štrky (North nature zone)
-      { lat: 48.360, lng: 17.590, type: 'green', strength: 0.7, radius: 0.010 }, // South fields
+  // Trnava Coords (approx center)
+  const TRNAVA_CENTER = { lat: 48.3774, lng: 17.5872 };
+
+  async function initMap() {
+    // Import libraries
+    const { Map, InfoWindow, Circle } = await google.maps.importLibrary("maps");
+
+    // Initialize Map
+    map = new Map(document.getElementById("map"), {
+      center: TRNAVA_CENTER,
+      zoom: 13,
+      mapId: 'DEMO_MAP_ID', 
+      mapTypeId: 'satellite', 
+      disableDefaultUI: true, 
+      zoomControl: true,
+      rotateControl: false,
+      streetViewControl: false,
+      tilt: 0
+    });
+
+    infoWindow = new InfoWindow();
+
+    // Wait a moment for map to settle then generate grid via API
+    setTimeout(() => {
+      generateNDVIGrid(Circle);
       
-      // URBAN ZONES (Low NDVI)
-      { lat: 48.377, lng: 17.587, type: 'urban', strength: 1.5, radius: 0.008 }, // Historic Center (Paved)
-      { lat: 48.385, lng: 17.595, type: 'urban', strength: 1.0, radius: 0.010 }, // Commercial North/East
-      { lat: 48.355, lng: 17.585, type: 'urban', strength: 0.8, radius: 0.010 }, // Industrial South
-    ];
+      // Hide loader
+      const loader = document.getElementById('map-loader');
+      if(loader) {
+          loader.style.opacity = '0';
+          setTimeout(() => { loader.style.display = 'none'; }, 500);
+      }
+    }, 1000);
 
-    async function initMap() {
-      // Import libraries
-      const { Map, InfoWindow, Circle } = await google.maps.importLibrary("maps");
-      const { AdvancedMarkerElement } = await google.maps.importLibrary("marker");
+    // Setup Controls
+    setupEventListeners(Circle);
+  }
 
-      // Initialize Map
-      map = new Map(document.getElementById("map"), {
-        center: TRNAVA_CENTER,
-        zoom: 13,
-        mapId: 'DEMO_MAP_ID', // Required for advanced markers if used
-        mapTypeId: 'satellite', // Satellite view is best for NDVI context
-        disableDefaultUI: true, // Custom UI
-        zoomControl: true,
-        rotateControl: false,
-        streetViewControl: false,
-        tilt: 0
+  // --- NEW: Generate Grid via Backend API ---
+  async function generateNDVIGrid(CircleClass) {
+    // Clear existing circles
+    gridCircles.forEach(c => c.setMap(null));
+    gridCircles = [];
+
+    // Define Bounds (around Trnava view)
+    const boundsPayload = {
+      north: TRNAVA_CENTER.lat + 0.04,
+      south: TRNAVA_CENTER.lat - 0.04,
+      east: TRNAVA_CENTER.lng + 0.06,
+      west: TRNAVA_CENTER.lng - 0.06,
+      resolution: currentResolution
+    };
+
+    try {
+      console.log("Fetching NDVI data from backend...");
+      
+      // Call your FastAPI Backend
+      const response = await fetch('/api/ndvi-grid', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(boundsPayload)
       });
 
-      infoWindow = new InfoWindow();
+      if (!response.ok) {
+          throw new Error(`HTTP error! status: ${response.status}`);
+      }
 
-      // Wait a moment for map to settle then generate grid
-      setTimeout(() => {
-        generateNDVIGrid(Circle);
-        document.getElementById('map-loader').style.opacity = '0';
-        setTimeout(() => {
-           document.getElementById('map-loader').style.display = 'none';
-        }, 500);
-      }, 1000);
+      const data = await response.json();
+      
+      // Process points returned from Python
+      data.points.forEach(point => {
+        const circle = new CircleClass({
+          strokeColor: point.color,
+          strokeOpacity: 0,
+          strokeWeight: 0,
+          fillColor: point.color,
+          fillOpacity: isLayerVisible ? currentOpacity : 0,
+          map: map,
+          center: { lat: point.lat, lng: point.lng },
+          radius: point.radius,
+          clickable: true,
+          zIndex: 1
+        });
 
-      // Setup Controls
-      setupEventListeners(Circle);
-    }
-
-    // --- NDVI Simulation Logic ---
-
-    // Function to calculate NDVI at a specific point based on anchors
-    function calculateSimulatedNDVI(lat, lng) {
-      let greenScore = 0;
-      let urbanScore = 0;
-      let baseNDVI = 0.2; // Background (rural/suburban mix)
-
-      anchors.forEach(anchor => {
-        const dist = Math.sqrt(Math.pow(lat - anchor.lat, 2) + Math.pow(lng - anchor.lng, 2));
-        
-        // Influence decay function
-        if (dist < anchor.radius * 2) {
-          // Normalized distance (0 at center, 1 at edge of influence)
-          let influence = 1 - (dist / (anchor.radius * 2));
-          influence = Math.max(0, influence); 
+        // Click Listener
+        circle.addListener('click', (ev) => {
+          const content = document.createElement('div');
+          content.className = 'p-2 text-slate-800';
+          content.innerHTML = `
+            <h4 class="font-bold text-sm mb-1">Grid Analysis</h4>
+            <p class="text-xs">NDVI Value: <span class="font-bold ${point.ndvi > 0.4 ? 'text-green-600' : 'text-orange-600'}">${point.ndvi}</span></p>
+            <p class="text-[10px] text-slate-500">Lat: ${point.lat.toFixed(4)}, Lng: ${point.lng.toFixed(4)}</p>
+          `;
+          const header = document.createElement('div');
+          header.className = 'bg-slate-100 p-2 border-b border-slate-300 font-bold text-xs text-slate-700';
+          header.textContent = "Data Point (Backend)";
           
-          if (anchor.type === 'green') {
-            greenScore += influence * anchor.strength;
-          } else {
-            urbanScore += influence * anchor.strength;
+          infoWindow.setHeaderContent(header);
+          infoWindow.setContent(content);
+          infoWindow.setPosition(ev.latLng);
+          infoWindow.open(map);
+        });
+
+        gridCircles.push(circle);
+      });
+
+      // Update stats in the sidebar (Simplified average calculation)
+      if (data.points.length > 0) {
+          const total = data.points.reduce((acc, curr) => acc + curr.ndvi, 0);
+          const avg = (total / data.points.length).toFixed(2);
+          const statElement = document.getElementById('stat-avg');
+          if(statElement) statElement.innerText = avg;
+      }
+
+    } catch (error) {
+      console.error("Error connecting to Sentinel Backend:", error);
+      alert("Could not load data from Backend. Is uvicorn running?");
+    }
+  }
+
+  // UI Event Listeners
+  function setupEventListeners(CircleClass) {
+    // Opacity Slider
+    const opSlider = document.getElementById('opacity-slider');
+    if(opSlider) {
+        opSlider.addEventListener('input', (e) => {
+          currentOpacity = e.target.value / 100;
+          if (isLayerVisible) {
+            gridCircles.forEach(c => c.setOptions({ fillOpacity: currentOpacity }));
           }
-        }
-      });
-
-      // Combine scores
-      let ndvi = baseNDVI + greenScore - urbanScore;
-      
-      // Add some Perlin-like noise for realism (pseudo-random based on coords)
-      const noise = (Math.sin(lat * 1000) + Math.cos(lng * 2000)) * 0.05;
-      ndvi += noise;
-
-      // Clamp -1 to 1
-      return Math.max(-1, Math.min(1, ndvi));
+        });
     }
 
-    // Get Color for NDVI Value
-    function getColorForNDVI(value) {
-      // Scale: -1 (Red) -> 0 (Yellow) -> 1 (Green)
-      // We'll use a simplified mapping
-      if (value < 0) return '#d73027'; // Red (Water/Heavy Urban)
-      if (value < 0.2) return '#fee08b'; // Yellow (Soil/Concrete)
-      if (value < 0.4) return '#d9ef8b'; // Light Green (Sparse)
-      if (value < 0.6) return '#91cf60'; // Medium Green
-      return '#1a9850'; // Dark Green (Dense)
+    // Resolution Slider
+    const resSlider = document.getElementById('resolution-slider');
+    if(resSlider) {
+        resSlider.addEventListener('change', (e) => {
+          currentResolution = parseInt(e.target.value);
+          generateNDVIGrid(CircleClass);
+        });
     }
 
-    // Generate the Visualization Grid
-    function generateNDVIGrid(CircleClass) {
-      // Clear existing
-      gridCircles.forEach(c => c.setMap(null));
-      gridCircles = [];
-
-      // Define Bounds (around Trnava view)
-      const bounds = {
-        north: TRNAVA_CENTER.lat + 0.04,
-        south: TRNAVA_CENTER.lat - 0.04,
-        east: TRNAVA_CENTER.lng + 0.06,
-        west: TRNAVA_CENTER.lng - 0.06
-      };
-
-      const stepsLat = currentResolution;
-      const stepsLng = Math.floor(currentResolution * 1.5); // Aspect ratio fix roughly
-
-      const latStep = (bounds.north - bounds.south) / stepsLat;
-      const lngStep = (bounds.east - bounds.west) / stepsLng;
-
-      for (let i = 0; i < stepsLat; i++) {
-        for (let j = 0; j < stepsLng; j++) {
-          const lat = bounds.south + (i * latStep);
-          const lng = bounds.west + (j * lngStep);
-
-          const ndvi = calculateSimulatedNDVI(lat, lng);
-          const color = getColorForNDVI(ndvi);
-          const radius = (latStep * 111000) / 2 * 1.2; // Convert deg to meters approx, overlap slightly
-
-          // Create Circle
-          const circle = new CircleClass({
-            strokeColor: color,
-            strokeOpacity: 0,
-            strokeWeight: 0,
-            fillColor: color,
-            fillOpacity: isLayerVisible ? currentOpacity : 0,
-            map: map,
-            center: { lat, lng },
-            radius: radius,
-            clickable: true,
-            zIndex: 1
-          });
-
-          // Add Metadata for interaction
-          circle.ndviValue = ndvi.toFixed(2);
-
-          // Click Listener
-          circle.addListener('click', (ev) => {
-            const content = document.createElement('div');
-            content.className = 'p-2 text-slate-800';
-            content.innerHTML = `
-              <h4 class="font-bold text-sm mb-1">Grid Analysis</h4>
-              <p class="text-xs">NDVI Value: <span class="font-bold ${ndvi > 0.4 ? 'text-green-600' : 'text-orange-600'}">${circle.ndviValue}</span></p>
-              <p class="text-[10px] text-slate-500">Lat: ${lat.toFixed(4)}, Lng: ${lng.toFixed(4)}</p>
-            `;
-            const header = document.createElement('div');
-            header.className = 'bg-slate-100 p-2 border-b border-slate-300 font-bold text-xs text-slate-700';
-            header.textContent = "Data Point";
-            
-            infoWindow.setHeaderContent(header);
-            infoWindow.setContent(content);
-            infoWindow.setPosition(ev.latLng);
-            infoWindow.open(map);
-          });
-
-          gridCircles.push(circle);
-        }
-      }
+    // Toggle Button
+    const toggleBtn = document.getElementById('toggle-layer-btn');
+    if(toggleBtn) {
+        toggleBtn.addEventListener('click', () => {
+          isLayerVisible = !isLayerVisible;
+          toggleBtn.textContent = isLayerVisible ? "ON" : "OFF";
+          toggleBtn.className = isLayerVisible 
+            ? "bg-green-600 hover:bg-green-500 text-white px-3 py-1 rounded text-xs font-bold transition"
+            : "bg-red-600 hover:bg-red-500 text-white px-3 py-1 rounded text-xs font-bold transition";
+          
+          gridCircles.forEach(c => c.setOptions({ fillOpacity: isLayerVisible ? currentOpacity : 0 }));
+        });
     }
+  }
 
-    // UI Event Listeners
-    function setupEventListeners(CircleClass) {
-      // Opacity Slider
-      const opSlider = document.getElementById('opacity-slider');
-      opSlider.addEventListener('input', (e) => {
-        currentOpacity = e.target.value / 100;
-        if (isLayerVisible) {
-          gridCircles.forEach(c => c.setOptions({ fillOpacity: currentOpacity }));
-        }
-      });
-
-      // Resolution Slider
-      const resSlider = document.getElementById('resolution-slider');
-      resSlider.addEventListener('change', (e) => {
-        currentResolution = parseInt(e.target.value);
-        generateNDVIGrid(CircleClass);
-      });
-
-      // Toggle Button
-      const toggleBtn = document.getElementById('toggle-layer-btn');
-      toggleBtn.addEventListener('click', () => {
-        isLayerVisible = !isLayerVisible;
-        toggleBtn.textContent = isLayerVisible ? "ON" : "OFF";
-        toggleBtn.className = isLayerVisible 
-          ? "bg-green-600 hover:bg-green-500 text-white px-3 py-1 rounded text-xs font-bold transition"
-          : "bg-red-600 hover:bg-red-500 text-white px-3 py-1 rounded text-xs font-bold transition";
-        
-        gridCircles.forEach(c => c.setOptions({ fillOpacity: isLayerVisible ? currentOpacity : 0 }));
-      });
+  // Global Pan Function for buttons
+  window.panToLoc = (lat, lng) => {
+    if(map) {
+      map.panTo({ lat, lng });
+      map.setZoom(14);
     }
+  };
+  // Export Functionality
+  window.downloadSourceCode = () => {
+    const htmlContent = "<!DOCTYPE html>\n" + document.documentElement.outerHTML;
+    const blob = new Blob([htmlContent], { type: "text/html" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "trnava-ndvi-monitor.html";
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
 
-    // Global Pan Function for buttons
-    window.panToLoc = (lat, lng) => {
-      if(map) {
-        map.panTo({ lat, lng });
-        map.setZoom(14);
-      }
-    };
-
-    // Export Functionality
-    window.downloadSourceCode = () => {
-      // Get the full HTML
-      const htmlContent = "<!DOCTYPE html>\n" + document.documentElement.outerHTML;
-      
-      // Create a blob
-      const blob = new Blob([htmlContent], { type: "text/html" });
-      
-      // Create a temporary link
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = "trnava-ndvi-monitor.html";
-      
-      // Trigger download
-      document.body.appendChild(a);
-      a.click();
-      
-      // Cleanup
-      document.body.removeChild(a);
-      URL.revokeObjectURL(url);
-    };
-
-    // Initialize
-    initMap();
-
-  </script>
+  // Initialize
+  initMap();
+</script>
 
   <!-- Attribution -->
   <div class="bg-slate-900 py-4 text-center border-t border-slate-800">
